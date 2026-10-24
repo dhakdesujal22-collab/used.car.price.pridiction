@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Keep downloaded datasets and generated outputs out of Git.
+data/*.csv
+submission/*
+!submission/.gitkeep
