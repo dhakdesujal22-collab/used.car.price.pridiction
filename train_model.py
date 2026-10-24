@@ -28,12 +28,13 @@ OUTPUT_DIR = PROJECT_DIR / "submission"
 TARGET = "Selling_Price"
 
 
-def load_dataset() -> pd.DataFrame:
+def load_dataset(data_dir: Path | None = None) -> pd.DataFrame:
     """Load a CSV from data/ only if it contains the expected target column."""
-    csv_files = sorted(DATA_DIR.glob("*.csv"))
+    dataset_dir = DATA_DIR if data_dir is None else Path(data_dir)
+    csv_files = sorted(dataset_dir.glob("*.csv"))
     if not csv_files:
         raise FileNotFoundError(
-            f"No CSV dataset found in {DATA_DIR}. Follow data/README.md to obtain "
+            f"No CSV dataset found in {dataset_dir}. Follow data/README.md to obtain "
             "the real CarDekho data and place it there."
         )
 
@@ -48,62 +49,77 @@ def load_dataset() -> pd.DataFrame:
             return frame
 
     raise ValueError(
-        f"None of the CSV files in {DATA_DIR} contains the required "
+        f"None of the CSV files in {dataset_dir} contains the required "
         f"`{TARGET}` column. See data/README.md for the expected CarDekho file."
+    )
+
+
+def prepare_dataset(cars: pd.DataFrame) -> pd.DataFrame:
+    """Remove duplicate rows and rows without a numeric target."""
+    if TARGET not in cars.columns:
+        raise ValueError(f"Dataset must contain the target column `{TARGET}`.")
+
+    prepared = cars.drop_duplicates().copy()
+    prepared[TARGET] = pd.to_numeric(prepared[TARGET], errors="coerce")
+    prepared = prepared.dropna(subset=[TARGET]).copy()
+    if len(prepared) < 2:
+        raise ValueError("At least two rows with a numeric Selling_Price are required.")
+    return prepared
+
+
+def split_dataset(
+    cars: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    """Split prepared data into a reproducible 80% train and 20% test set."""
+    features = cars.drop(columns=[TARGET])
+    target = cars[TARGET]
+    return train_test_split(features, target, test_size=0.2, random_state=42)
+
+
+def build_model(features: pd.DataFrame) -> Pipeline:
+    """Build a preprocessing and regression pipeline fitted only on training data."""
+    numeric_features = features.select_dtypes(include="number").columns.tolist()
+    categorical_features = features.select_dtypes(exclude="number").columns.tolist()
+    transformers = []
+    if numeric_features:
+        transformers.append(
+            ("numeric", SimpleImputer(strategy="median"), numeric_features)
+        )
+    if categorical_features:
+        categorical_pipeline = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("one_hot", OneHotEncoder(handle_unknown="ignore")),
+            ]
+        )
+        transformers.append(
+            ("categorical", categorical_pipeline, categorical_features)
+        )
+    if not transformers:
+        raise ValueError("At least one usable feature column is required.")
+
+    preprocessing = ColumnTransformer(transformers=transformers, remainder="drop")
+    return Pipeline(
+        steps=[
+            ("preprocessing", preprocessing),
+            (
+                "regressor",
+                RandomForestRegressor(
+                    n_estimators=200,
+                    random_state=42,
+                    min_samples_leaf=2,
+                    n_jobs=-1,
+                ),
+            ),
+        ]
     )
 
 
 def main() -> int:
     try:
-        cars = load_dataset()
-        cars = cars.dropna(subset=[TARGET]).copy()
-        cars[TARGET] = pd.to_numeric(cars[TARGET], errors="coerce")
-        cars = cars.dropna(subset=[TARGET])
-        if len(cars) < 2:
-            raise ValueError("At least two rows with a valid Selling_Price are required.")
-
-        features = cars.drop(columns=[TARGET])
-        target = cars[TARGET]
-        numeric_features = features.select_dtypes(include="number").columns.tolist()
-        categorical_features = features.select_dtypes(exclude="number").columns.tolist()
-
-        preprocessing = ColumnTransformer(
-            transformers=[
-                (
-                    "numeric",
-                    SimpleImputer(strategy="median"),
-                    numeric_features,
-                ),
-                (
-                    "categorical",
-                    Pipeline(
-                        steps=[
-                            ("imputer", SimpleImputer(strategy="most_frequent")),
-                            ("one_hot", OneHotEncoder(handle_unknown="ignore")),
-                        ]
-                    ),
-                    categorical_features,
-                ),
-            ],
-            remainder="drop",
-        )
-        model = Pipeline(
-            steps=[
-                ("preprocessing", preprocessing),
-                (
-                    "regressor",
-                    RandomForestRegressor(
-                        n_estimators=200,
-                        random_state=42,
-                        min_samples_leaf=2,
-                        n_jobs=-1,
-                    ),
-                ),
-            ]
-        )
-        x_train, x_test, y_train, y_test = train_test_split(
-            features, target, test_size=0.2, random_state=42
-        )
+        cars = prepare_dataset(load_dataset())
+        x_train, x_test, y_train, y_test = split_dataset(cars)
+        model = build_model(x_train)
         model.fit(x_train, y_train)
         predictions = model.predict(x_test)
 
